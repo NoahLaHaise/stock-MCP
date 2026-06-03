@@ -2,9 +2,9 @@ from finvizfinance.quote import finvizfinance
 from tradingview_screener import Query, col
 from datetime import datetime, timedelta
 import pandas as pd
-from WATCHLIST import WATCHLIST
+from Python.WATCHLIST import WATCHLIST
 import yfinance as yf
-from API.TelegramMessenger import TelegramMessenger
+#from API.TelegramMessenger import TelegramMessenger
 
 def stock_scanner():
 

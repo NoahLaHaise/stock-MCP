@@ -1,0 +1,5 @@
+finvizfinance
+yfinance
+pendulum
+pandas
+tradingview-screener

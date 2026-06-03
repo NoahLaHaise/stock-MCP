@@ -1,0 +1,1 @@
+WATCHLIST = ["GOOGL", "BABA", "CEG", "CCJ", "NOW", "NTR", "RIO", "NVDA", "MU", "META"]
