@@ -3,3 +3,4 @@ yfinance
 pendulum
 pandas
 tradingview-screener
+mcp[cli]
