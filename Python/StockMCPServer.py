@@ -2,28 +2,9 @@ from finvizfinance.quote import finvizfinance
 from tradingview_screener import Query, col
 from datetime import datetime, timedelta
 import pandas as pd
-from .WATCHLIST import WATCHLIST
+from WATCHLIST import WATCHLIST
 import yfinance as yf
 from mcp.server.fastmcp import FastMCP
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse
-import os
-from dotenv import load_dotenv
-#from API.TelegramMessenger import TelegramMessenger
-
-load_dotenv()
-
-API_TOKEN = os.environ["MCP_API_TOKEN"]
-
-
-class BearerTokenMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        if request.url.path.startswith("/.well-known/"):
-            return await call_next(request)
-        auth = request.headers.get("Authorization", "")
-        if not auth.startswith("Bearer ") or auth[7:] != API_TOKEN:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
-        return await call_next(request)
 
 
 mcp = FastMCP("finance", host="0.0.0.0", port=8080)
@@ -124,5 +105,5 @@ def get_options_chain(ticker: str, expiration_date: str | None = None) -> dict:
 if __name__ == "__main__":
     import uvicorn
     app = mcp.streamable_http_app()
-    app.add_middleware(BearerTokenMiddleware)
+    # app.add_middleware(BearerTokenMiddleware)
     uvicorn.run(app, host="0.0.0.0", port=8080)
