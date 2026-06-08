@@ -72,7 +72,7 @@ def watchlist_updates() -> str:
     return updates
 
 @mcp.tool()
-def get_history(ticker: str, period: str = "6mo", interval: str = "1d") -> list:
+def get_ticker_price_history(ticker: str, period: str = "6mo", interval: str = "1d") -> list:
     """Get Open, High, Low, Close, and Volume price history. period: 1mo/3mo/6mo/1y/2y. interval: 1d/1wk/1mo."""
     t = yf.Ticker(ticker)
     df = t.history(period=period, interval=interval)
@@ -82,7 +82,7 @@ def get_history(ticker: str, period: str = "6mo", interval: str = "1d") -> list:
 
 @mcp.tool()
 def get_options_chain(ticker: str, expiration_date: str | None = None) -> dict:
-    """Get full options chain with strikes, bid/ask, IV, and open interest. expiration_date format: 'YYYY-MM-DD'. If None, uses nearest expiration."""
+    """Get full options chain for a specific ticker with strikes, bid/ask, IV, and open interest. expiration_date format: 'YYYY-MM-DD'. If None, uses nearest expiration."""
     t = yf.Ticker(ticker)
     if not t.options:
         return {"error": f"No options available for {ticker}"}
@@ -101,6 +101,19 @@ def get_options_chain(ticker: str, expiration_date: str | None = None) -> dict:
         "calls": _chain_records(chain.calls),
         "puts": _chain_records(chain.puts),
     }
+
+@mcp.tool()
+def get_tool_guidelines() -> str:
+    """Guidelines for using the stock tools. You should pull this before using any other tool."""
+
+    guidelines = """
+    Stock Tools Guidelines:
+    - All data is real time market data. Do not use stock prices from your memory. The data returned here is your SINGLE source of truth, treat it as such. 
+    - Stock data is returned from the yfinance library.
+    - Indicators are returned from the TradingView library. """
+
+    return guidelines
+
 
 if __name__ == "__main__":
     import uvicorn
