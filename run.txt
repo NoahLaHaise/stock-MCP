@@ -1,3 +1,0 @@
-uv run mcp run Python/StockMCPServer.py --transport streamable-http
-
-cloudflared tunnel run stock-mcp
