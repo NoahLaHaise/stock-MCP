@@ -2,3 +2,5 @@
 .env
 Python/__pycache__/
 run.md
+Python/watchlist.json
+Python/watchlist.tmp

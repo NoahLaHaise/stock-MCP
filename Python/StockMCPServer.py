@@ -1,124 +1,131 @@
-from finvizfinance.quote import finvizfinance
-from tradingview_screener import Query, col
-from datetime import datetime, timedelta
-import pandas as pd
-from WATCHLIST import WATCHLIST
-import yfinance as yf
+"""MCP server exposing stock market data tools."""
+
+from pathlib import Path
+
 from mcp.server.fastmcp import FastMCP
 
+from market_data import TradingView, YahooFinance
+from models import (
+    AnalystRatings,
+    EarningsReport,
+    Fundamentals,
+    Indicators,
+    Mover,
+    NewsArticle,
+    OptionsChain,
+    PriceBar,
+    WatchlistChange,
+    WatchlistUpdate,
+)
+from watchlist import Watchlist
 
 mcp = FastMCP("finance", host="0.0.0.0", port=8080)
+yahoo = YahooFinance()
+tradingview = TradingView()
+watchlist = Watchlist(Path(__file__).with_name("watchlist.json"))
 
-@mcp.tool()
-def stock_scanner() -> str:
-    """Scan NASDAQ and NYSE for stocks with volume > 5M and daily gain > 5%, sorted by top movers."""
-    _, df = (Query()
-          .select('name', 'volume', 'change_abs', 'change')
-          .where(col('volume') > 5_000_000,
-                 col('change') > 5,
-                 col('exchange').isin(['NASDAQ', 'NYSE']))
-          .limit(25)
-          .order_by('change', ascending=False)
-          .get_scanner_data())
+GUIDELINES = """
+Stock Tools Guidelines:
+- All data is real time market data. Do not use stock prices from your memory. The data returned here is your SINGLE source of truth, treat it as such.
+- Stock prices, options, news, earnings, analyst ratings and fundamentals come from the yfinance library.
+- Indicators and market scans come from the TradingView library.
+- The watchlist is persistent: use get_watchlist, add_to_watchlist and remove_from_watchlist to manage it.
+"""
 
-    if df.empty:
-        return "No movers found."
-
-    lines = [f"{row['name']}: +{row['change']:.1f}% | Vol: {int(row['volume']):,} | Abs chg: {row['change_abs']:.2f}"
-             for _, row in df.iterrows()]
-    return "\n".join(lines)
-
-
-@mcp.tool()
-def stock_indicators(ticker: str, addtl_indicators: list[str] = []) -> str:
-    """Return RSI, MACD, and Bollinger Bands for a ticker. Pass addtl_indicators to include extra TradingView columns."""
-    base_cols = ['name', 'RSI', 'MACD.macd', 'MACD.signal', 'BB.upper', 'BB.lower']
-
-    _, df = (Query()
-        .select(*base_cols, *addtl_indicators)
-        .where(col('name') == ticker)
-        .get_scanner_data())
-
-    if df.empty:
-        return "No indicator data found"
-
-    row = df.iloc[0]
-    result = (f"RSI: {row['RSI']:.1f} | "
-              f"MACD: {row['MACD.macd']:.2f} / Signal: {row['MACD.signal']:.2f} | "
-              f"BB: {row['BB.lower']:.2f} - {row['BB.upper']:.2f}")
-
-    for indicator in addtl_indicators:
-        if indicator in row:
-            result += f" | {indicator}: {row[indicator]}"
-
-    return result
-
-
-@mcp.tool()
-def watchlist_updates() -> str:
-    """Return price change, current price, trailing P/E, and key technical indicators for all watchlist tickers."""
-    updates = ""
-    for ticker in WATCHLIST:
-        stock = yf.Ticker(ticker)
-        price_history = stock.history(period='2d', interval='1d', actions=False)
-
-        price_movement = price_history.tail(2)['Close']
-        percent_change = price_movement.pct_change().iloc[-1]
-        pe_ratio = stock.info.get('trailingPE', 'N/A')
-
-        as_of = price_movement.index[-1].strftime("%Y-%m-%d")
-        updates += f"Ticker: {ticker} has moved {percent_change:.2%}. Current price {round(price_movement.iloc[-1], 2)} (as of {as_of}). Trailing P/E: {pe_ratio}\n"
-        updates += f"Key indicators: {stock_indicators(ticker)}\n\n"
-
-    return updates
-
-@mcp.tool()
-def get_ticker_price_history(ticker: str, period: str = "6mo", interval: str = "1d") -> list:
-    """Get Open, High, Low, Close, and Volume price history. period: 1mo/3mo/6mo/1y/2y. interval: 1d/1wk/1mo."""
-    t = yf.Ticker(ticker)
-    df = t.history(period=period, interval=interval)
-    intraday = interval.endswith(("m", "h")) and not interval.endswith("mo")
-    df.index = df.index.strftime("%Y-%m-%d %H:%M %Z" if intraday else "%Y-%m-%d")
-    return df.reset_index(names="Date")[["Date", "Open", "High", "Low", "Close", "Volume"]].to_dict("records")
-
-
-@mcp.tool()
-def get_options_chain(ticker: str, expiration_date: str | None = None) -> dict:
-    """Get full options chain for a specific ticker with strikes, bid/ask, IV, and open interest. expiration_date format: 'YYYY-MM-DD'. If None, uses nearest expiration."""
-    t = yf.Ticker(ticker)
-    if not t.options:
-        return {"error": f"No options available for {ticker}"}
-    if expiration_date is None:
-        expiration_date = t.options[0]
-
-    def _chain_records(df):
-        df = df.copy()
-        df["lastTradeDate"] = df["lastTradeDate"].astype(str)
-        return df.to_dict("records")
-
-    chain = t.option_chain(expiration_date)
-    return {
-        "expiration": expiration_date,
-        "expirations": list(t.options),
-        "calls": _chain_records(chain.calls),
-        "puts": _chain_records(chain.puts),
-    }
 
 @mcp.tool()
 def get_tool_guidelines() -> str:
     """Guidelines for using the stock tools. You should pull this before using any other tool."""
+    return GUIDELINES
 
-    guidelines = """
-    Stock Tools Guidelines:
-    - All data is real time market data. Do not use stock prices from your memory. The data returned here is your SINGLE source of truth, treat it as such. 
-    - Stock data is returned from the yfinance library.
-    - Indicators are returned from the TradingView library. """
 
-    return guidelines
+@mcp.tool()
+def stock_scanner(min_volume: int = 5_000_000, min_change_percent: float = 5, limit: int = 25) -> list[Mover]:
+    """Scan NASDAQ and NYSE for today's top gainers above a volume and percent-gain threshold, sorted by gain."""
+    return tradingview.top_movers(min_volume, min_change_percent, limit)
+
+
+@mcp.tool()
+def stock_indicators(ticker: str, addtl_indicators: list[str] | None = None) -> Indicators:
+    """Return RSI, MACD, and Bollinger Bands for a ticker. Pass addtl_indicators to include extra TradingView columns."""
+    return tradingview.indicators(ticker.upper(), addtl_indicators or ())
+
+
+@mcp.tool()
+def get_ticker_price_history(ticker: str, period: str = "6mo", interval: str = "1d") -> list[PriceBar]:
+    """Get timestamped Open, High, Low, Close, and Volume bars. period: 1d/5d/1mo/3mo/6mo/1y/2y. interval: 1h/1d/1wk/1mo."""
+    return yahoo.price_history(ticker.upper(), period, interval)
+
+
+@mcp.tool()
+def get_options_chain(ticker: str, expiration_date: str | None = None) -> OptionsChain:
+    """Get the options chain for a ticker with strikes, bid/ask, implied volatility (percent), and open interest. expiration_date format: 'YYYY-MM-DD'. If None, uses nearest expiration."""
+    return yahoo.options_chain(ticker.upper(), expiration_date)
+
+
+@mcp.tool()
+def get_news(ticker: str, limit: int = 10) -> list[NewsArticle]:
+    """Get recent news articles for a ticker with publisher, publish time (UTC), summary, and link."""
+    return yahoo.news(ticker.upper(), limit)
+
+
+@mcp.tool()
+def get_earnings(ticker: str, limit: int = 8) -> EarningsReport:
+    """Get the next earnings date with EPS and revenue estimates, plus recent quarters' estimated vs reported EPS and surprise percent."""
+    return yahoo.earnings(ticker.upper(), limit)
+
+
+@mcp.tool()
+def get_analyst_ratings(ticker: str, limit: int = 10) -> AnalystRatings:
+    """Get the analyst consensus, price targets, monthly buy/hold/sell counts, and the most recent rating and price target changes."""
+    return yahoo.analyst_ratings(ticker.upper(), limit)
+
+
+@mcp.tool()
+def get_fundamentals(ticker: str) -> Fundamentals:
+    """Get valuation, profitability, financial health, and ownership data. Margins, growth, returns and ownership are fractions (0.25 = 25%); dividend_yield_pct is already a percent."""
+    return yahoo.fundamentals(ticker.upper())
+
+
+@mcp.tool()
+def get_watchlist() -> list[str]:
+    """List the tickers currently on the watchlist."""
+    return watchlist.tickers
+
+
+@mcp.tool()
+def add_to_watchlist(tickers: list[str]) -> WatchlistChange:
+    """Add tickers to the watchlist. Returns which were added (applied), already present (skipped), or not found (invalid)."""
+    return watchlist.add(tickers, is_valid=yahoo.ticker_exists)
+
+
+@mcp.tool()
+def remove_from_watchlist(tickers: list[str]) -> WatchlistChange:
+    """Remove tickers from the watchlist. Returns which were removed (applied) and which were not on it (skipped)."""
+    return watchlist.remove(tickers)
+
+
+@mcp.tool()
+def watchlist_updates() -> list[WatchlistUpdate]:
+    """Return the latest close, daily percent change, trailing P/E, and key technical indicators for every watchlist ticker."""
+    return [_watchlist_update(ticker) for ticker in watchlist.tickers]
+
+
+def _watchlist_update(ticker: str) -> WatchlistUpdate:
+    try:
+        return WatchlistUpdate(
+            ticker=ticker,
+            move=yahoo.daily_move(ticker),
+            trailing_pe=yahoo.trailing_pe(ticker),
+            indicators=tradingview.indicators(ticker),
+        )
+    except Exception as error:
+        return WatchlistUpdate(ticker=ticker, error=str(error))
 
 
 if __name__ == "__main__":
     import uvicorn
+
     app = mcp.streamable_http_app()
     # app.add_middleware(BearerTokenMiddleware)
     uvicorn.run(app, host="0.0.0.0", port=8080)
