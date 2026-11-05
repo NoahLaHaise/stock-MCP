@@ -23,14 +23,18 @@ class DailyMove:
 @dataclass(frozen=True)
 class Mover:
     symbol: str
+    name: str | None
+    price: float | None
     change_percent: float | None
     change_abs: float | None
     volume: int | None
+    market_cap: float | None
 
 
 @dataclass(frozen=True)
 class Indicators:
     ticker: str
+    interval: str
     rsi: float | None
     macd: float | None
     macd_signal: float | None
@@ -76,6 +80,9 @@ class OptionContract:
 class OptionsChain:
     ticker: str
     expiration: str
+    underlying_price: float | None
+    strike_range_pct: float | None
+    quotes_stale: bool
     expirations: list[str]
     calls: list[OptionContract]
     puts: list[OptionContract]
@@ -88,6 +95,8 @@ class NewsArticle:
     published: str | None
     summary: str | None
     url: str | None
+    related_tickers: list[str]
+    mentions_ticker: bool
 
 
 @dataclass(frozen=True)
@@ -189,8 +198,9 @@ class FinancialHealth:
     total_debt: float | None
     debt_to_equity: float | None
     current_ratio: float | None
-    free_cash_flow: float | None
     operating_cash_flow: float | None
+    capital_expenditure: float | None
+    free_cash_flow: float | None
 
 
 @dataclass(frozen=True)
@@ -202,7 +212,10 @@ class MarketProfile:
     insider_ownership: float | None
     institutional_ownership: float | None
     short_percent_of_float: float | None
-    dividend_yield_pct: float | None
+    trailing_dividend_rate: float | None
+    trailing_dividend_yield_pct: float | None
+    forward_dividend_rate: float | None
+    forward_dividend_yield_pct: float | None
     payout_ratio: float | None
 
 

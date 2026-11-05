@@ -40,15 +40,21 @@ def get_tool_guidelines() -> str:
 
 
 @mcp.tool()
-def stock_scanner(min_volume: int = 5_000_000, min_change_percent: float = 5, limit: int = 25) -> list[Mover]:
-    """Scan NASDAQ and NYSE for today's top gainers above a volume and percent-gain threshold, sorted by gain."""
-    return tradingview.top_movers(min_volume, min_change_percent, limit)
+def stock_scanner(
+    min_volume: int = 5_000_000,
+    min_change_percent: float = 5,
+    min_price: float = 5,
+    min_market_cap: float = 0,
+    limit: int = 25,
+) -> list[Mover]:
+    """Scan NASDAQ and NYSE for today's top gainers with name, price, and market cap, filtered by volume, percent gain, share price, and market cap (USD), sorted by gain."""
+    return tradingview.top_movers(min_volume, min_change_percent, min_price, min_market_cap, limit)
 
 
 @mcp.tool()
-def stock_indicators(ticker: str, addtl_indicators: list[str] | None = None) -> Indicators:
-    """Return RSI, MACD, and Bollinger Bands for a ticker. Pass addtl_indicators to include extra TradingView columns."""
-    return tradingview.indicators(ticker.upper(), addtl_indicators or ())
+def stock_indicators(ticker: str, interval: str = "1d", addtl_indicators: list[str] | None = None) -> Indicators:
+    """Return RSI, MACD, and Bollinger Bands for a ticker on the given timeframe. interval: 1m/5m/15m/30m/1h/2h/4h/1d/1wk/1mo. Pass addtl_indicators to include extra TradingView columns on the same timeframe."""
+    return tradingview.indicators(ticker.upper(), interval, addtl_indicators or ())
 
 
 @mcp.tool()
@@ -58,20 +64,22 @@ def get_ticker_price_history(ticker: str, period: str = "6mo", interval: str = "
 
 
 @mcp.tool()
-def get_options_chain(ticker: str, expiration_date: str | None = None) -> OptionsChain:
-    """Get the options chain for a ticker with strikes, bid/ask, implied volatility (percent), and open interest. expiration_date format: 'YYYY-MM-DD'. If None, uses nearest expiration."""
-    return yahoo.options_chain(ticker.upper(), expiration_date)
+def get_options_chain(
+    ticker: str, expiration_date: str | None = None, strike_range_pct: float | None = 15
+) -> OptionsChain:
+    """Get the options chain for a ticker with strikes, bid/ask, implied volatility (percent), and open interest. expiration_date format: 'YYYY-MM-DD'; if None, uses nearest expiration. Only strikes within strike_range_pct of the underlying price are returned; pass None for the full chain. If quotes_stale is true (no bids or asks, typically outside market hours), bid/ask/open interest are unreliable and implied volatility is null."""
+    return yahoo.options_chain(ticker.upper(), expiration_date, strike_range_pct)
 
 
 @mcp.tool()
 def get_news(ticker: str, limit: int = 10) -> list[NewsArticle]:
-    """Get recent news articles for a ticker with publisher, publish time (UTC), summary, and link."""
+    """Get recent news articles for a ticker with publisher, publish time (UTC), summary, link, and related tickers. Articles that mention the ticker or company in the title or summary (mentions_ticker) are listed first; others may only reference it in passing."""
     return yahoo.news(ticker.upper(), limit)
 
 
 @mcp.tool()
 def get_earnings(ticker: str, limit: int = 8) -> EarningsReport:
-    """Get the next earnings date with EPS and revenue estimates, plus recent quarters' estimated vs reported EPS and surprise percent."""
+    """Get the next earnings date with EPS and revenue estimates, plus the last `limit` reported quarters' estimated vs reported EPS and surprise percent."""
     return yahoo.earnings(ticker.upper(), limit)
 
 
@@ -83,7 +91,7 @@ def get_analyst_ratings(ticker: str, limit: int = 10) -> AnalystRatings:
 
 @mcp.tool()
 def get_fundamentals(ticker: str) -> Fundamentals:
-    """Get valuation, profitability, financial health, and ownership data. Margins, growth, returns and ownership are fractions (0.25 = 25%); dividend_yield_pct is already a percent."""
+    """Get valuation, profitability, financial health, and ownership data. Margins, growth, returns, ownership and payout_ratio are fractions (0.25 = 25%); fields ending in _pct are percents. Cash flows are trailing twelve months, with free_cash_flow = operating_cash_flow + capital_expenditure (capex is negative). Trailing dividend fields reflect dividends paid over the past year; forward fields reflect the current declared rate."""
     return yahoo.fundamentals(ticker.upper())
 
 

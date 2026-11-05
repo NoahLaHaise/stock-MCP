@@ -1,6 +1,7 @@
 """Adapters that fetch data from Yahoo Finance and TradingView and convert it into models."""
 
 import math
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any, TypeVar
 
@@ -58,6 +59,11 @@ def to_number(value: Any, digits: int = PRICE_DIGITS) -> int | float | None:
     return round(number, digits)
 
 
+def to_percent(fraction: Any) -> float | None:
+    number = to_number(fraction, RATIO_DIGITS + 2)
+    return None if number is None else to_number(number * 100)
+
+
 def to_int(value: Any) -> int | None:
     number = to_number(value, 0)
     return None if number is None else int(number)
@@ -77,6 +83,8 @@ def is_intraday(interval: str) -> bool:
 
 class YahooFinance:
     """Prices, options, news, earnings, analyst ratings and fundamentals from Yahoo Finance."""
+
+    NEWS_CANDIDATES_PER_RESULT = 3
 
     _FUNDAMENTAL_KEYS: Mapping[type, Mapping[str, str]] = {
         Valuation: {
@@ -106,8 +114,6 @@ class YahooFinance:
             "total_debt": "totalDebt",
             "debt_to_equity": "debtToEquity",
             "current_ratio": "currentRatio",
-            "free_cash_flow": "freeCashflow",
-            "operating_cash_flow": "operatingCashflow",
         },
         MarketProfile: {
             "beta": "beta",
@@ -117,7 +123,9 @@ class YahooFinance:
             "insider_ownership": "heldPercentInsiders",
             "institutional_ownership": "heldPercentInstitutions",
             "short_percent_of_float": "shortPercentOfFloat",
-            "dividend_yield_pct": "dividendYield",
+            "trailing_dividend_rate": "trailingAnnualDividendRate",
+            "forward_dividend_rate": "dividendRate",
+            "forward_dividend_yield_pct": "dividendYield",
             "payout_ratio": "payoutRatio",
         },
     }
@@ -148,14 +156,14 @@ class YahooFinance:
             raise NoDataError(f"Not enough recent closes for {ticker}.")
         return DailyMove(
             price=to_number(closes.iloc[-1]),
-            change_percent=to_number(closes.pct_change().iloc[-1] * 100),
+            change_percent=to_percent(closes.pct_change().iloc[-1]),
             as_of=to_date(closes.index[-1]),
         )
 
     def trailing_pe(self, ticker: str) -> float | None:
         return to_number(yf.Ticker(ticker).info.get("trailingPE"))
 
-    def options_chain(self, ticker: str, expiration: str | None) -> OptionsChain:
+    def options_chain(self, ticker: str, expiration: str | None, strike_range_pct: float | None) -> OptionsChain:
         yahoo_ticker = yf.Ticker(ticker)
         expirations = list(yahoo_ticker.options)
         if not expirations:
@@ -163,34 +171,33 @@ class YahooFinance:
         expiration = expiration or expirations[0]
         if expiration not in expirations:
             raise MarketDataError(f"{expiration} is not an expiration for {ticker}. Available: {', '.join(expirations)}")
+        underlying_price = to_number(yahoo_ticker.fast_info.last_price)
         chain = yahoo_ticker.option_chain(expiration)
+        calls = self._contracts(self._near_price(chain.calls, underlying_price, strike_range_pct))
+        puts = self._contracts(self._near_price(chain.puts, underlying_price, strike_range_pct))
+        contracts = calls + puts
         return OptionsChain(
             ticker=ticker,
             expiration=expiration,
+            underlying_price=underlying_price,
+            strike_range_pct=strike_range_pct,
+            quotes_stale=bool(contracts) and not any(contract.bid or contract.ask for contract in contracts),
             expirations=expirations,
-            calls=self._contracts(chain.calls),
-            puts=self._contracts(chain.puts),
+            calls=calls,
+            puts=puts,
         )
 
     def news(self, ticker: str, limit: int) -> list[NewsArticle]:
-        articles = []
-        for item in yf.Ticker(ticker).get_news(count=limit):
-            content = item.get("content", {})
-            articles.append(
-                NewsArticle(
-                    title=content.get("title"),
-                    publisher=(content.get("provider") or {}).get("displayName"),
-                    published=content.get("pubDate"),
-                    summary=content.get("summary"),
-                    url=(content.get("canonicalUrl") or {}).get("url"),
-                )
-            )
-        return articles
+        yahoo_ticker = yf.Ticker(ticker)
+        mention = self._mention_pattern(ticker, yahoo_ticker.info.get("shortName"))
+        candidates = yahoo_ticker.get_news(count=limit * self.NEWS_CANDIDATES_PER_RESULT)
+        articles = [self._article(item.get("content", {}), mention) for item in candidates]
+        return sorted(articles, key=lambda article: not article.mentions_ticker)[:limit]
 
     def earnings(self, ticker: str, limit: int) -> EarningsReport:
         yahoo_ticker = yf.Ticker(ticker)
         upcoming = self._upcoming_earnings(yahoo_ticker.calendar or {})
-        history = self._earnings_history(yahoo_ticker.get_earnings_dates(limit=limit))
+        history = self._earnings_history(yahoo_ticker.get_earnings_dates(), limit)
         if upcoming is None and not history:
             raise NoDataError(f"No earnings data for {ticker}.")
         return EarningsReport(ticker=ticker, upcoming=upcoming, history=history)
@@ -214,7 +221,8 @@ class YahooFinance:
         return ratings
 
     def fundamentals(self, ticker: str) -> Fundamentals:
-        info = yf.Ticker(ticker).info
+        yahoo_ticker = yf.Ticker(ticker)
+        info = yahoo_ticker.info
         if not info.get("quoteType"):
             raise NoDataError(f"No fundamentals for {ticker}.")
         return Fundamentals(
@@ -225,14 +233,58 @@ class YahooFinance:
             currency=info.get("currency"),
             valuation=self._section(Valuation, info),
             profitability=self._section(Profitability, info),
-            financial_health=self._section(FinancialHealth, info),
-            market_profile=self._section(MarketProfile, info),
+            financial_health=self._section(FinancialHealth, info, **self._cash_flow(yahoo_ticker.ttm_cashflow)),
+            market_profile=self._section(
+                MarketProfile,
+                info,
+                trailing_dividend_yield_pct=to_percent(info.get("trailingAnnualDividendYield")),
+            ),
         )
 
     @classmethod
-    def _section(cls, section: type[Section], info: Mapping[str, Any]) -> Section:
+    def _section(cls, section: type[Section], info: Mapping[str, Any], **computed: Any) -> Section:
         keys = cls._FUNDAMENTAL_KEYS[section]
-        return section(**{name: to_number(info.get(key), RATIO_DIGITS) for name, key in keys.items()})
+        return section(**{name: to_number(info.get(key), RATIO_DIGITS) for name, key in keys.items()}, **computed)
+
+    @staticmethod
+    def _cash_flow(statement: pd.DataFrame) -> dict[str, float | None]:
+        def latest(line_item: str) -> float | None:
+            return to_number(statement.loc[line_item].iloc[0]) if line_item in statement.index else None
+
+        operating = latest("Operating Cash Flow")
+        capital_expenditure = latest("Capital Expenditure")
+        free = None if operating is None or capital_expenditure is None else operating + capital_expenditure
+        return {"operating_cash_flow": operating, "capital_expenditure": capital_expenditure, "free_cash_flow": free}
+
+    @staticmethod
+    def _near_price(contracts: pd.DataFrame, price: float | None, range_pct: float | None) -> pd.DataFrame:
+        if price is None or range_pct is None:
+            return contracts
+        width = price * range_pct / 100
+        return contracts[contracts["strike"].between(price - width, price + width)]
+
+    @staticmethod
+    def _mention_pattern(ticker: str, company_name: str | None) -> re.Pattern[str]:
+        terms = [rf"\b{re.escape(ticker)}\b"]
+        if company_name:
+            brand = re.split(r"[\s,]+", company_name.strip())[0]
+            terms.append(rf"(?i:\b{re.escape(brand)}\b)")
+        return re.compile("|".join(terms))
+
+    @staticmethod
+    def _article(content: Mapping[str, Any], mention: re.Pattern[str]) -> NewsArticle:
+        title = content.get("title")
+        summary = content.get("summary")
+        tickers = (content.get("finance") or {}).get("stockTickers") or []
+        return NewsArticle(
+            title=title,
+            publisher=(content.get("provider") or {}).get("displayName"),
+            published=content.get("pubDate"),
+            summary=summary,
+            url=(content.get("canonicalUrl") or {}).get("url"),
+            related_tickers=[entry["symbol"] for entry in tickers if "symbol" in entry],
+            mentions_ticker=bool(mention.search(f"{title or ''} {summary or ''}")),
+        )
 
     @staticmethod
     def _contracts(contracts: pd.DataFrame) -> list[OptionContract]:
@@ -247,7 +299,9 @@ class YahooFinance:
                 percent_change=to_number(contract.percentChange),
                 volume=to_int(contract.volume),
                 open_interest=to_int(contract.openInterest),
-                implied_volatility_pct=to_number(contract.impliedVolatility * 100),
+                implied_volatility_pct=(
+                    to_percent(contract.impliedVolatility) if to_number(contract.bid) or to_number(contract.ask) else None
+                ),
                 in_the_money=bool(contract.inTheMoney),
                 last_trade_date=to_date(contract.lastTradeDate, DATETIME_FORMAT),
             )
@@ -270,9 +324,10 @@ class YahooFinance:
         )
 
     @staticmethod
-    def _earnings_history(dates: pd.DataFrame | None) -> list[EarningsResult]:
+    def _earnings_history(dates: pd.DataFrame | None, limit: int) -> list[EarningsResult]:
         if dates is None or dates.empty:
             return []
+        reported = dates[dates.index <= pd.Timestamp.now(tz=dates.index.tz)].head(limit)
         return [
             EarningsResult(
                 date=to_date(day, DATETIME_FORMAT),
@@ -280,7 +335,7 @@ class YahooFinance:
                 eps_reported=to_number(row["Reported EPS"]),
                 surprise_percent=to_number(row["Surprise(%)"]),
             )
-            for day, row in dates.iterrows()
+            for day, row in reported.iterrows()
         ]
 
     @staticmethod
@@ -334,16 +389,34 @@ class TradingView:
     BASE_INDICATORS = ("RSI", "MACD.macd", "MACD.signal", "BB.lower", "BB.upper")
     EXCHANGES = ("NASDAQ", "NYSE")
     SECURITY_TYPES = ("stock", "fund", "dr")
+    INTERVAL_SUFFIXES = {
+        "1m": "|1",
+        "5m": "|5",
+        "15m": "|15",
+        "30m": "|30",
+        "1h": "|60",
+        "2h": "|120",
+        "4h": "|240",
+        "1d": "",
+        "1wk": "|1W",
+        "1mo": "|1M",
+    }
 
-    def top_movers(self, min_volume: int, min_change_percent: float, limit: int) -> list[Mover]:
+    def top_movers(
+        self, min_volume: int, min_change_percent: float, min_price: float, min_market_cap: float, limit: int
+    ) -> list[Mover]:
+        filters = [
+            col("volume") > min_volume,
+            col("change") > min_change_percent,
+            col("close") >= min_price,
+            col("exchange").isin(list(self.EXCHANGES)),
+        ]
+        if min_market_cap > 0:
+            filters.append(col("market_cap_basic") >= min_market_cap)
         _, movers = (
             Query()
-            .select("name", "volume", "change_abs", "change")
-            .where(
-                col("volume") > min_volume,
-                col("change") > min_change_percent,
-                col("exchange").isin(list(self.EXCHANGES)),
-            )
+            .select("name", "description", "close", "change", "change_abs", "volume", "market_cap_basic")
+            .where(*filters)
             .limit(limit)
             .order_by("change", ascending=False)
             .get_scanner_data()
@@ -351,17 +424,24 @@ class TradingView:
         return [
             Mover(
                 symbol=mover["name"],
+                name=to_text(mover["description"]),
+                price=to_number(mover["close"]),
                 change_percent=to_number(mover["change"]),
                 change_abs=to_number(mover["change_abs"]),
                 volume=to_int(mover["volume"]),
+                market_cap=to_number(mover["market_cap_basic"]),
             )
             for _, mover in movers.iterrows()
         ]
 
-    def indicators(self, ticker: str, additional: Sequence[str] = ()) -> Indicators:
+    def indicators(self, ticker: str, interval: str = "1d", additional: Sequence[str] = ()) -> Indicators:
+        if interval not in self.INTERVAL_SUFFIXES:
+            raise MarketDataError(f"Unsupported interval {interval}. Use one of: {', '.join(self.INTERVAL_SUFFIXES)}")
+        suffix = self.INTERVAL_SUFFIXES[interval]
+        columns = {name: f"{name}{suffix}" for name in (*self.BASE_INDICATORS, *additional)}
         _, rows = (
             Query()
-            .select("name", *self.BASE_INDICATORS, *additional)
+            .select("name", *columns.values())
             .where(col("name") == ticker)
             .where2(Or(*(col("type") == security_type for security_type in self.SECURITY_TYPES)))
             .get_scanner_data()
@@ -371,12 +451,13 @@ class TradingView:
         row = rows.iloc[0]
         return Indicators(
             ticker=ticker,
-            rsi=to_number(row["RSI"]),
-            macd=to_number(row["MACD.macd"]),
-            macd_signal=to_number(row["MACD.signal"]),
-            bollinger_lower=to_number(row["BB.lower"]),
-            bollinger_upper=to_number(row["BB.upper"]),
-            additional={name: self._indicator_value(row.get(name)) for name in additional},
+            interval=interval,
+            rsi=to_number(row[columns["RSI"]]),
+            macd=to_number(row[columns["MACD.macd"]]),
+            macd_signal=to_number(row[columns["MACD.signal"]]),
+            bollinger_lower=to_number(row[columns["BB.lower"]]),
+            bollinger_upper=to_number(row[columns["BB.upper"]]),
+            additional={name: self._indicator_value(row.get(columns[name])) for name in additional},
         )
 
     @staticmethod
