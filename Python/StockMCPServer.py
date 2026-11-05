@@ -77,10 +77,8 @@ def get_ticker_price_history(ticker: str, period: str = "6mo", interval: str = "
     """Get Open, High, Low, Close, and Volume price history. period: 1mo/3mo/6mo/1y/2y. interval: 1d/1wk/1mo."""
     t = yf.Ticker(ticker)
     df = t.history(period=period, interval=interval)
-    # Intraday bars need the time of day (in the exchange's timezone); daily and longer bars only need the date.
     intraday = interval.endswith(("m", "h")) and not interval.endswith("mo")
     df.index = df.index.strftime("%Y-%m-%d %H:%M %Z" if intraday else "%Y-%m-%d")
-    # to_dict("records") drops the index, so move the date into its own column first.
     return df.reset_index(names="Date")[["Date", "Open", "High", "Low", "Close", "Volume"]].to_dict("records")
 
 
