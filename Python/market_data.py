@@ -6,7 +6,7 @@ from typing import Any, TypeVar
 
 import pandas as pd
 import yfinance as yf
-from tradingview_screener import Query, col
+from tradingview_screener import Or, Query, col
 
 from models import (
     AnalystRatings,
@@ -333,6 +333,7 @@ class TradingView:
 
     BASE_INDICATORS = ("RSI", "MACD.macd", "MACD.signal", "BB.lower", "BB.upper")
     EXCHANGES = ("NASDAQ", "NYSE")
+    SECURITY_TYPES = ("stock", "fund", "dr")
 
     def top_movers(self, min_volume: int, min_change_percent: float, limit: int) -> list[Mover]:
         _, movers = (
@@ -362,6 +363,7 @@ class TradingView:
             Query()
             .select("name", *self.BASE_INDICATORS, *additional)
             .where(col("name") == ticker)
+            .where2(Or(*(col("type") == security_type for security_type in self.SECURITY_TYPES)))
             .get_scanner_data()
         )
         if rows.empty:
