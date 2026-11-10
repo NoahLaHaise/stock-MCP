@@ -452,6 +452,9 @@ class TradingView:
         "current_session",
     )
     MARKET_TIMEZONE = "America/New_York"
+    MARKET_STATUS_TICKER = "AAPL"
+    DEFAULT_MIN_DOLLAR_VOLUME = 20_000_000
+    PREMARKET_MIN_MARKET_CAP = 300_000_000
 
     def scan(
         self,
@@ -463,7 +466,7 @@ class TradingView:
         min_price: float | None = None,
         min_market_cap: float | None = None,
         max_market_cap: float | None = None,
-        min_dollar_volume: float | None = None,
+        min_dollar_volume: float | str | None = "auto",
         min_volume: int | None = None,
         min_relative_volume: float | None = None,
         sectors: Sequence[str] | None = None,
@@ -472,7 +475,7 @@ class TradingView:
         above_sma50: bool | None = None,
         above_sma200: bool | None = None,
         max_pct_below_52w_high: float | None = None,
-        include_adrs: bool = False,
+        include_adrs: bool = True,
         limit: int = 25,
     ) -> ScanResult:
         if timeframe not in self.TIMEFRAME_COLUMNS:
@@ -481,9 +484,18 @@ class TradingView:
         sort_column = change_column if sort_by == "change" else self.SORT_COLUMNS.get(sort_by)
         if sort_column is None:
             raise MarketDataError(f"Unsupported sort_by {sort_by}. Use one of: change, {', '.join(self.SORT_COLUMNS)}")
+        if min_dollar_volume == "auto":
+            if sort_by == "premarket_change":
+                min_dollar_volume = None
+                min_market_cap = self.PREMARKET_MIN_MARKET_CAP if min_market_cap is None else min_market_cap
+            else:
+                min_dollar_volume = self.DEFAULT_MIN_DOLLAR_VOLUME
+        elif isinstance(min_dollar_volume, str):
+            raise MarketDataError('min_dollar_volume must be a number, null, or "auto".')
 
         filters = [
             col("exchange").isin(list(self.EXCHANGES)),
+            col("typespecs").has_none_of(["pre-ipo"]),
             *self._range("close", min_price, None),
             *self._range(change_column, min_change_percent, max_change_percent),
             *self._range("market_cap_basic", min_market_cap, max_market_cap),
@@ -507,9 +519,27 @@ class TradingView:
             query = query.where(*filters, *common_stock)
         total, rows = query.order_by(sort_column, ascending=ascending).limit(limit).get_scanner_data()
 
-        first = rows.iloc[0] if not rows.empty else None
+        status = rows if not rows.empty else self._market_status()
+        first = status.iloc[0] if not status.empty else None
+        applied_filters = {
+            "min_price": min_price,
+            "min_change_percent": min_change_percent,
+            "max_change_percent": max_change_percent,
+            "min_market_cap": min_market_cap,
+            "max_market_cap": max_market_cap,
+            "min_dollar_volume": min_dollar_volume,
+            "min_volume": min_volume,
+            "min_relative_volume": min_relative_volume,
+            "sectors": list(sectors) if sectors else None,
+            "min_rsi": min_rsi,
+            "max_rsi": max_rsi,
+            "above_sma50": above_sma50,
+            "above_sma200": above_sma200,
+            "max_pct_below_52w_high": max_pct_below_52w_high,
+            "include_adrs": include_adrs,
+        }
         return ScanResult(
-            as_of=self._market_time(rows["update_time"].max(), DATETIME_FORMAT) if first is not None else None,
+            as_of=self._market_time(status["update_time"].max(), DATETIME_FORMAT) if first is not None else None,
             session=to_text(first["current_session"]) if first is not None else None,
             trading_day=self._market_time(first["time"], DATE_FORMAT) if first is not None else None,
             data_delay_minutes=self._delay_minutes(first["update_mode"]) if first is not None else None,
@@ -517,8 +547,18 @@ class TradingView:
             timeframe=timeframe,
             sort_by=sort_by,
             ascending=ascending,
-            results=[self._mover(row) for _, row in rows.iterrows()],
+            applied_filters={name: value for name, value in applied_filters.items() if value is not None},
+            results=[self._mover(row, change_column) for _, row in rows.iterrows()],
         )
+
+    def _market_status(self) -> pd.DataFrame:
+        _, rows = (
+            Query()
+            .select("time", "update_time", "update_mode", "current_session")
+            .where(col("name") == self.MARKET_STATUS_TICKER, col("exchange") == "NASDAQ")
+            .get_scanner_data()
+        )
+        return rows
 
     @staticmethod
     def _range(column: str, low: float | None, high: float | None) -> list:
@@ -550,7 +590,7 @@ class TradingView:
         return int(match.group(1)) // 60 if match else None
 
     @staticmethod
-    def _mover(row: pd.Series) -> Mover:
+    def _mover(row: pd.Series, change_column: str) -> Mover:
         price = to_number(row["close"], RATIO_DIGITS)
         high = to_number(row["price_52_week_high"], RATIO_DIGITS)
         sma50 = to_number(row["SMA50"], RATIO_DIGITS)
@@ -563,6 +603,7 @@ class TradingView:
             price=to_price(row["close"]),
             change_percent=to_number(row["change"]),
             change_abs=to_price(row["change_abs"]),
+            timeframe_change_percent=to_number(row[change_column]),
             gap_percent=to_number(row["gap"]),
             premarket_change_percent=to_number(row["premarket_change"]),
             perf_week_percent=to_number(row["Perf.W"]),

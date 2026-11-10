@@ -25,9 +25,34 @@ yahoo = YahooFinance()
 tradingview = TradingView()
 watchlist = Watchlist(Path(__file__).with_name("watchlist.json"))
 
+Sector = Literal[
+    "Commercial Services",
+    "Communications",
+    "Consumer Durables",
+    "Consumer Non-Durables",
+    "Consumer Services",
+    "Distribution Services",
+    "Electronic Technology",
+    "Energy Minerals",
+    "Finance",
+    "Government",
+    "Health Services",
+    "Health Technology",
+    "Industrial Services",
+    "Miscellaneous",
+    "Non-Energy Minerals",
+    "Process Industries",
+    "Producer Manufacturing",
+    "Retail Trade",
+    "Technology Services",
+    "Transportation",
+    "Utilities",
+]
+
 GUIDELINES = """
 Stock Tools Guidelines:
-- All data is real time market data. Do not use stock prices from your memory. The data returned here is your SINGLE source of truth, treat it as such.
+- All data is live market data. Do not use stock prices from your memory. The data returned here is your SINGLE source of truth, treat it as such.
+- TradingView data (scanner and indicators) may be delayed. Check data_delay_minutes, as_of and session in scanner results before calling a price current.
 - Stock prices, options, news, earnings, analyst ratings and fundamentals come from the yfinance library.
 - Indicators and market scans come from the TradingView library.
 - The watchlist is persistent: use get_watchlist, add_to_watchlist and remove_from_watchlist to manage it.
@@ -52,29 +77,30 @@ def stock_scanner(
     min_price: float | None = 5,
     min_market_cap: float | None = None,
     max_market_cap: float | None = None,
-    min_dollar_volume: float | None = 20_000_000,
+    min_dollar_volume: float | Literal["auto"] | None = "auto",
     min_volume: int | None = None,
     min_relative_volume: float | None = None,
-    sectors: list[str] | None = None,
+    sectors: list[Sector] | None = None,
     min_rsi: float | None = None,
     max_rsi: float | None = None,
     above_sma50: bool | None = None,
     above_sma200: bool | None = None,
     max_pct_below_52w_high: float | None = None,
-    include_adrs: bool = False,
+    include_adrs: bool = True,
     limit: int = 25,
 ) -> ScanResult:
-    """Screen NASDAQ and NYSE common stocks (preferreds, units, warrants and ETFs excluded; ADRs optional).
+    """Screen NASDAQ and NYSE common stocks and ADRs (preferreds, units, warrants, ETFs and pre-IPO listings excluded).
 
-    timeframe picks the performance window used by sort_by="change" and the min/max_change_percent filters.
-    Sort ascending=True with sort_by="change" for the worst losers. Volume filters: min_dollar_volume (USD traded
-    today) is the main liquidity filter; min_relative_volume compares today's volume to the 10-day average (2 = twice normal).
-    max_pct_below_52w_high keeps names within that percent of their 52-week high. above_sma50/above_sma200: True keeps
-    closes above the moving average, False below. Market caps are USD. Set a filter to null to disable it.
-    sectors uses TradingView sector names: Commercial Services, Communications, Consumer Durables, Consumer Non-Durables,
-    Consumer Services, Distribution Services, Electronic Technology, Energy Minerals, Finance, Government, Health Services,
-    Health Technology, Industrial Services, Miscellaneous, Non-Energy Minerals, Process Industries, Producer Manufacturing,
-    Retail Trade, Technology Services, Transportation, Utilities.
+    timeframe picks the performance window used by sort_by="change", the min/max_change_percent filters, and each
+    result's timeframe_change_percent (change_percent is always the 1-day move). Sort ascending=True with
+    sort_by="change" for the worst losers. min_relative_volume compares today's volume to the 10-day average
+    (2 = twice normal). max_pct_below_52w_high keeps names within that percent of their 52-week high.
+    above_sma50/above_sma200: True keeps closes above the moving average, False below. Market caps and dollar volume
+    are USD. Set a filter to null to disable it.
+
+    min_dollar_volume (USD traded today) defaults to "auto": $20M, except with sort_by="premarket_change", where
+    today's volume is unreliable and a $300M min_market_cap is applied instead (unless you set one). Pass a number
+    or null to override. applied_filters in the response shows the filters that were actually used.
 
     The response includes session (pre_market/market/post_market/out_of_session), trading_day (the session the daily
     change refers to; on weekends this is the last trading day), as_of (US Eastern) and data_delay_minutes.

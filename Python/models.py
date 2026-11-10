@@ -29,6 +29,7 @@ class Mover:
     price: float | None
     change_percent: float | None
     change_abs: float | None
+    timeframe_change_percent: float | None
     gap_percent: float | None
     premarket_change_percent: float | None
     perf_week_percent: float | None
@@ -58,6 +59,7 @@ class ScanResult:
     timeframe: str
     sort_by: str
     ascending: bool
+    applied_filters: dict[str, float | bool | list[str]]
     results: list[Mover]
 
 
