@@ -24,11 +24,41 @@ class DailyMove:
 class Mover:
     symbol: str
     name: str | None
+    sector: str | None
+    industry: str | None
     price: float | None
     change_percent: float | None
     change_abs: float | None
+    gap_percent: float | None
+    premarket_change_percent: float | None
+    perf_week_percent: float | None
+    perf_month_percent: float | None
+    perf_3m_percent: float | None
+    perf_ytd_percent: float | None
+    perf_year_percent: float | None
     volume: int | None
-    market_cap: float | None
+    dollar_volume: int | None
+    average_volume_10d: int | None
+    relative_volume_10d: float | None
+    float_shares: int | None
+    market_cap: int | None
+    rsi: float | None
+    pct_from_52w_high: float | None
+    above_sma50: bool | None
+    above_sma200: bool | None
+
+
+@dataclass(frozen=True)
+class ScanResult:
+    as_of: str | None
+    session: str | None
+    trading_day: str | None
+    data_delay_minutes: int | None
+    total_matches: int
+    timeframe: str
+    sort_by: str
+    ascending: bool
+    results: list[Mover]
 
 
 @dataclass(frozen=True)

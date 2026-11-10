@@ -7,7 +7,7 @@ A Model Context Protocol (MCP) server that exposes real-time stock market data a
 | Tool | Description |
 |------|-------------|
 | `get_tool_guidelines` | Returns usage guidelines — Claude calls this before any other tool |
-| `stock_scanner` | Scans NASDAQ and NYSE for stocks with volume > 5M and daily gain > 5%, sorted by top movers |
+| `stock_scanner` | Screens NASDAQ and NYSE common stocks by daily or multi-period performance, dollar and relative volume, sector, RSI, moving averages and distance from 52-week high, with configurable sort field and direction |
 | `stock_indicators` | Returns RSI, MACD, and Bollinger Bands for a ticker (supports additional TradingView columns) |
 | `watchlist_updates` | Returns price change, current price, trailing P/E, and key indicators for all watchlist tickers |
 | `get_ticker_price_history` | Returns OHLCV history for a ticker. Periods: `1mo/3mo/6mo/1y/2y`. Intervals: `1d/1wk/1mo` |

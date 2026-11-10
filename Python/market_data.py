@@ -7,7 +7,7 @@ from typing import Any, TypeVar
 
 import pandas as pd
 import yfinance as yf
-from tradingview_screener import Or, Query, col
+from tradingview_screener import And, Or, Query, col
 
 from models import (
     AnalystRatings,
@@ -27,6 +27,7 @@ from models import (
     Profitability,
     RatingChange,
     RecommendationTrend,
+    ScanResult,
     UpcomingEarnings,
     Valuation,
 )
@@ -57,6 +58,11 @@ def to_number(value: Any, digits: int = PRICE_DIGITS) -> int | float | None:
     if math.isnan(number) or math.isinf(number):
         return None
     return round(number, digits)
+
+
+def to_price(value: Any) -> float | None:
+    number = to_number(value, RATIO_DIGITS)
+    return number if number is None or abs(number) < 1 else to_number(number)
 
 
 def to_percent(fraction: Any) -> float | None:
@@ -402,37 +408,179 @@ class TradingView:
         "1mo": "|1M",
     }
 
-    def top_movers(
-        self, min_volume: int, min_change_percent: float, min_price: float, min_market_cap: float, limit: int
-    ) -> list[Mover]:
+    TIMEFRAME_COLUMNS = {
+        "1d": "change",
+        "1w": "Perf.W",
+        "1m": "Perf.1M",
+        "3m": "Perf.3M",
+        "ytd": "Perf.YTD",
+        "1y": "Perf.Y",
+    }
+    SORT_COLUMNS = {
+        "relative_volume": "relative_volume_10d_calc",
+        "dollar_volume": "Value.Traded",
+        "volume": "volume",
+        "gap": "gap",
+        "premarket_change": "premarket_change",
+        "market_cap": "market_cap_basic",
+        "rsi": "RSI",
+    }
+    SCAN_COLUMNS = (
+        "name",
+        "description",
+        "sector",
+        "industry",
+        "close",
+        "change",
+        "change_abs",
+        "gap",
+        "premarket_change",
+        *(column for column in TIMEFRAME_COLUMNS.values() if column != "change"),
+        "volume",
+        "Value.Traded",
+        "average_volume_10d_calc",
+        "relative_volume_10d_calc",
+        "float_shares_outstanding",
+        "market_cap_basic",
+        "RSI",
+        "SMA50",
+        "SMA200",
+        "price_52_week_high",
+        "time",
+        "update_time",
+        "update_mode",
+        "current_session",
+    )
+    MARKET_TIMEZONE = "America/New_York"
+
+    def scan(
+        self,
+        timeframe: str = "1d",
+        sort_by: str = "change",
+        ascending: bool = False,
+        min_change_percent: float | None = None,
+        max_change_percent: float | None = None,
+        min_price: float | None = None,
+        min_market_cap: float | None = None,
+        max_market_cap: float | None = None,
+        min_dollar_volume: float | None = None,
+        min_volume: int | None = None,
+        min_relative_volume: float | None = None,
+        sectors: Sequence[str] | None = None,
+        min_rsi: float | None = None,
+        max_rsi: float | None = None,
+        above_sma50: bool | None = None,
+        above_sma200: bool | None = None,
+        max_pct_below_52w_high: float | None = None,
+        include_adrs: bool = False,
+        limit: int = 25,
+    ) -> ScanResult:
+        if timeframe not in self.TIMEFRAME_COLUMNS:
+            raise MarketDataError(f"Unsupported timeframe {timeframe}. Use one of: {', '.join(self.TIMEFRAME_COLUMNS)}")
+        change_column = self.TIMEFRAME_COLUMNS[timeframe]
+        sort_column = change_column if sort_by == "change" else self.SORT_COLUMNS.get(sort_by)
+        if sort_column is None:
+            raise MarketDataError(f"Unsupported sort_by {sort_by}. Use one of: change, {', '.join(self.SORT_COLUMNS)}")
+
         filters = [
-            col("volume") > min_volume,
-            col("change") > min_change_percent,
-            col("close") >= min_price,
             col("exchange").isin(list(self.EXCHANGES)),
+            *self._range("close", min_price, None),
+            *self._range(change_column, min_change_percent, max_change_percent),
+            *self._range("market_cap_basic", min_market_cap, max_market_cap),
+            *self._range("Value.Traded", min_dollar_volume, None),
+            *self._range("volume", min_volume, None),
+            *self._range("relative_volume_10d_calc", min_relative_volume, None),
+            *self._range("RSI", min_rsi, max_rsi),
+            *self._side_of("SMA50", above_sma50),
+            *self._side_of("SMA200", above_sma200),
         ]
-        if min_market_cap > 0:
-            filters.append(col("market_cap_basic") >= min_market_cap)
-        _, movers = (
-            Query()
-            .select("name", "description", "close", "change", "change_abs", "volume", "market_cap_basic")
-            .where(*filters)
-            .limit(limit)
-            .order_by("change", ascending=False)
-            .get_scanner_data()
+        if sectors:
+            filters.append(col("sector").isin(list(sectors)))
+        if max_pct_below_52w_high is not None:
+            filters.append(col("close").above_pct("price_52_week_high", 1 - max_pct_below_52w_high / 100))
+
+        common_stock = (col("type") == "stock", col("typespecs").has(["common"]))
+        query = Query().select(*self.SCAN_COLUMNS)
+        if include_adrs:
+            query = query.where(*filters).where2(Or(And(*common_stock), col("type") == "dr"))
+        else:
+            query = query.where(*filters, *common_stock)
+        total, rows = query.order_by(sort_column, ascending=ascending).limit(limit).get_scanner_data()
+
+        first = rows.iloc[0] if not rows.empty else None
+        return ScanResult(
+            as_of=self._market_time(rows["update_time"].max(), DATETIME_FORMAT) if first is not None else None,
+            session=to_text(first["current_session"]) if first is not None else None,
+            trading_day=self._market_time(first["time"], DATE_FORMAT) if first is not None else None,
+            data_delay_minutes=self._delay_minutes(first["update_mode"]) if first is not None else None,
+            total_matches=total,
+            timeframe=timeframe,
+            sort_by=sort_by,
+            ascending=ascending,
+            results=[self._mover(row) for _, row in rows.iterrows()],
         )
-        return [
-            Mover(
-                symbol=mover["name"],
-                name=to_text(mover["description"]),
-                price=to_number(mover["close"]),
-                change_percent=to_number(mover["change"]),
-                change_abs=to_number(mover["change_abs"]),
-                volume=to_int(mover["volume"]),
-                market_cap=to_number(mover["market_cap_basic"]),
-            )
-            for _, mover in movers.iterrows()
-        ]
+
+    @staticmethod
+    def _range(column: str, low: float | None, high: float | None) -> list:
+        bounds = []
+        if low is not None:
+            bounds.append(col(column) >= low)
+        if high is not None:
+            bounds.append(col(column) <= high)
+        return bounds
+
+    @staticmethod
+    def _side_of(column: str, above: bool | None) -> list:
+        if above is None:
+            return []
+        return [col("close") > col(column)] if above else [col("close") < col(column)]
+
+    @classmethod
+    def _market_time(cls, epoch_seconds: Any, date_format: str) -> str | None:
+        if epoch_seconds is None or pd.isna(epoch_seconds):
+            return None
+        return pd.Timestamp(epoch_seconds, unit="s", tz="UTC").tz_convert(cls.MARKET_TIMEZONE).strftime(date_format)
+
+    @staticmethod
+    def _delay_minutes(update_mode: Any) -> int | None:
+        mode = to_text(update_mode)
+        if mode == "streaming":
+            return 0
+        match = re.fullmatch(r"delayed_streaming_(\d+)", mode or "")
+        return int(match.group(1)) // 60 if match else None
+
+    @staticmethod
+    def _mover(row: pd.Series) -> Mover:
+        price = to_number(row["close"], RATIO_DIGITS)
+        high = to_number(row["price_52_week_high"], RATIO_DIGITS)
+        sma50 = to_number(row["SMA50"], RATIO_DIGITS)
+        sma200 = to_number(row["SMA200"], RATIO_DIGITS)
+        return Mover(
+            symbol=row["name"],
+            name=to_text(row["description"]),
+            sector=to_text(row["sector"]),
+            industry=to_text(row["industry"]),
+            price=to_price(row["close"]),
+            change_percent=to_number(row["change"]),
+            change_abs=to_price(row["change_abs"]),
+            gap_percent=to_number(row["gap"]),
+            premarket_change_percent=to_number(row["premarket_change"]),
+            perf_week_percent=to_number(row["Perf.W"]),
+            perf_month_percent=to_number(row["Perf.1M"]),
+            perf_3m_percent=to_number(row["Perf.3M"]),
+            perf_ytd_percent=to_number(row["Perf.YTD"]),
+            perf_year_percent=to_number(row["Perf.Y"]),
+            volume=to_int(row["volume"]),
+            dollar_volume=to_int(row["Value.Traded"]),
+            average_volume_10d=to_int(row["average_volume_10d_calc"]),
+            relative_volume_10d=to_number(row["relative_volume_10d_calc"]),
+            float_shares=to_int(row["float_shares_outstanding"]),
+            market_cap=to_int(row["market_cap_basic"]),
+            rsi=to_number(row["RSI"]),
+            pct_from_52w_high=to_number((price / high - 1) * 100) if price is not None and high else None,
+            above_sma50=price > sma50 if price is not None and sma50 is not None else None,
+            above_sma200=price > sma200 if price is not None and sma200 is not None else None,
+        )
 
     def indicators(self, ticker: str, interval: str = "1d", additional: Sequence[str] = ()) -> Indicators:
         if interval not in self.INTERVAL_SUFFIXES:

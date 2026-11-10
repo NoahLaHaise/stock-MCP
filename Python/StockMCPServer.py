@@ -1,6 +1,7 @@
 """MCP server exposing stock market data tools."""
 
 from pathlib import Path
+from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 
@@ -10,10 +11,10 @@ from models import (
     EarningsReport,
     Fundamentals,
     Indicators,
-    Mover,
     NewsArticle,
     OptionsChain,
     PriceBar,
+    ScanResult,
     WatchlistChange,
     WatchlistUpdate,
 )
@@ -41,14 +42,64 @@ def get_tool_guidelines() -> str:
 
 @mcp.tool()
 def stock_scanner(
-    min_volume: int = 5_000_000,
-    min_change_percent: float = 5,
-    min_price: float = 5,
-    min_market_cap: float = 0,
+    timeframe: Literal["1d", "1w", "1m", "3m", "ytd", "1y"] = "1d",
+    sort_by: Literal[
+        "change", "relative_volume", "dollar_volume", "volume", "gap", "premarket_change", "market_cap", "rsi"
+    ] = "change",
+    ascending: bool = False,
+    min_change_percent: float | None = None,
+    max_change_percent: float | None = None,
+    min_price: float | None = 5,
+    min_market_cap: float | None = None,
+    max_market_cap: float | None = None,
+    min_dollar_volume: float | None = 20_000_000,
+    min_volume: int | None = None,
+    min_relative_volume: float | None = None,
+    sectors: list[str] | None = None,
+    min_rsi: float | None = None,
+    max_rsi: float | None = None,
+    above_sma50: bool | None = None,
+    above_sma200: bool | None = None,
+    max_pct_below_52w_high: float | None = None,
+    include_adrs: bool = False,
     limit: int = 25,
-) -> list[Mover]:
-    """Scan NASDAQ and NYSE for today's top gainers with name, price, and market cap, filtered by volume, percent gain, share price, and market cap (USD), sorted by gain."""
-    return tradingview.top_movers(min_volume, min_change_percent, min_price, min_market_cap, limit)
+) -> ScanResult:
+    """Screen NASDAQ and NYSE common stocks (preferreds, units, warrants and ETFs excluded; ADRs optional).
+
+    timeframe picks the performance window used by sort_by="change" and the min/max_change_percent filters.
+    Sort ascending=True with sort_by="change" for the worst losers. Volume filters: min_dollar_volume (USD traded
+    today) is the main liquidity filter; min_relative_volume compares today's volume to the 10-day average (2 = twice normal).
+    max_pct_below_52w_high keeps names within that percent of their 52-week high. above_sma50/above_sma200: True keeps
+    closes above the moving average, False below. Market caps are USD. Set a filter to null to disable it.
+    sectors uses TradingView sector names: Commercial Services, Communications, Consumer Durables, Consumer Non-Durables,
+    Consumer Services, Distribution Services, Electronic Technology, Energy Minerals, Finance, Government, Health Services,
+    Health Technology, Industrial Services, Miscellaneous, Non-Energy Minerals, Process Industries, Producer Manufacturing,
+    Retail Trade, Technology Services, Transportation, Utilities.
+
+    The response includes session (pre_market/market/post_market/out_of_session), trading_day (the session the daily
+    change refers to; on weekends this is the last trading day), as_of (US Eastern) and data_delay_minutes.
+    total_matches counts every stock that passed the filters, not just the returned page."""
+    return tradingview.scan(
+        timeframe=timeframe,
+        sort_by=sort_by,
+        ascending=ascending,
+        min_change_percent=min_change_percent,
+        max_change_percent=max_change_percent,
+        min_price=min_price,
+        min_market_cap=min_market_cap,
+        max_market_cap=max_market_cap,
+        min_dollar_volume=min_dollar_volume,
+        min_volume=min_volume,
+        min_relative_volume=min_relative_volume,
+        sectors=sectors,
+        min_rsi=min_rsi,
+        max_rsi=max_rsi,
+        above_sma50=above_sma50,
+        above_sma200=above_sma200,
+        max_pct_below_52w_high=max_pct_below_52w_high,
+        include_adrs=include_adrs,
+        limit=limit,
+    )
 
 
 @mcp.tool()
